@@ -17,7 +17,7 @@ import { Request } from 'express';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { Repository } from 'typeorm';
 import bcrypt from 'bcryptjs';
-import { User } from './entities';
+import { ExternalIdentity, User } from './entities';
 
 export class LoginDto {
   @IsString()
@@ -27,6 +27,16 @@ export class LoginDto {
   @IsString()
   @MinLength(1)
   password!: string;
+}
+
+export class BindExternalIdentityDto {
+  @IsString()
+  @MinLength(1)
+  provider!: string;
+
+  @IsString()
+  @MinLength(1)
+  providerUserId!: string;
 }
 
 export type JwtPayload = { sub: number; username: string };
@@ -59,6 +69,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 export class AuthService {
   constructor(
     @InjectRepository(User) private readonly users: Repository<User>,
+    @InjectRepository(ExternalIdentity)
+    private readonly externalIdentities: Repository<ExternalIdentity>,
     private readonly jwt: JwtService,
   ) {}
 
@@ -74,6 +86,19 @@ export class AuthService {
       username: user.username,
     });
     return { token, username: user.username, nickname: user.nickname };
+  }
+
+  async bindExternalIdentity(userId: number, dto: BindExternalIdentityDto) {
+    const provider = dto.provider.trim().toLowerCase();
+    const providerUserId = dto.providerUserId.trim();
+    const existing = await this.externalIdentities.findOne({ where: { provider, providerUserId } });
+    if (existing && existing.userId !== userId) {
+      throw new UnauthorizedException('该外部身份已绑定到其他账号');
+    }
+    if (existing) return existing;
+    return this.externalIdentities.save(
+      this.externalIdentities.create({ provider, providerUserId, userId }),
+    );
   }
 }
 
@@ -101,5 +126,11 @@ export class AuthController {
       username: req.user.username,
       nickname: req.user.nickname,
     };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('external-identities')
+  bindExternalIdentity(@Req() req: AuthedRequest, @Body() dto: BindExternalIdentityDto) {
+    return this.auth.bindExternalIdentity(req.user.id, dto);
   }
 }

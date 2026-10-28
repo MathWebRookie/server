@@ -9,16 +9,25 @@ import { ContentService } from './content.service';
 import {
   Article,
   ChartPoint,
+  ExternalIdentity,
   HomeImage,
+  Ledger,
+  LedgerCategory,
+  LedgerMember,
+  LedgerTransaction,
   Message,
   Moment,
   Notice,
   Photo,
   SiteDocument,
+  SkillAuditLog,
   TimelinePost,
   TreeHole,
   User,
 } from './entities';
+import { LedgerController, LedgerInternalController, LedgerService } from './ledger';
+import { LedgerSkillAuthGuard } from './ledger-skill-auth.guard';
+import { LedgerInitial1730000000000 } from './migrations/1730000000000-ledger-initial';
 import { SeedService } from './seed.service';
 
 const entities = [
@@ -33,6 +42,12 @@ const entities = [
   Message,
   ChartPoint,
   SiteDocument,
+  ExternalIdentity,
+  Ledger,
+  LedgerMember,
+  LedgerCategory,
+  LedgerTransaction,
+  SkillAuditLog,
 ];
 
 @Module({
@@ -44,7 +59,9 @@ const entities = [
         type: 'postgres' as const,
         url: config.getOrThrow<string>('DATABASE_URL'),
         entities,
-        synchronize: true,
+        synchronize: config.get<string>('NODE_ENV') !== 'production',
+        migrations: [LedgerInitial1730000000000],
+        migrationsRun: config.get<string>('NODE_ENV') === 'production',
         retryAttempts: 10,
         retryDelay: 3000,
       }),
@@ -59,7 +76,14 @@ const entities = [
       }),
     }),
   ],
-  controllers: [AuthController, ContentController],
-  providers: [AuthService, JwtStrategy, ContentService, SeedService],
+  controllers: [AuthController, ContentController, LedgerController, LedgerInternalController],
+  providers: [
+    AuthService,
+    JwtStrategy,
+    ContentService,
+    SeedService,
+    LedgerService,
+    LedgerSkillAuthGuard,
+  ],
 })
 export class AppModule {}
