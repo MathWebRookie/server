@@ -28,6 +28,7 @@ import {
 import { LedgerController, LedgerInternalController, LedgerService } from './ledger';
 import { LedgerSkillAuthGuard } from './ledger-skill-auth.guard';
 import { LedgerInitial1730000000000 } from './migrations/1730000000000-ledger-initial';
+import { LedgerTransactionRevision1730000000001 } from './migrations/1730000000001-ledger-transaction-revision';
 import { SeedService } from './seed.service';
 
 const entities = [
@@ -60,7 +61,7 @@ const entities = [
         url: config.getOrThrow<string>('DATABASE_URL'),
         entities,
         synchronize: config.get<string>('NODE_ENV') !== 'production',
-        migrations: [LedgerInitial1730000000000],
+        migrations: [LedgerInitial1730000000000, LedgerTransactionRevision1730000000001],
         migrationsRun: config.get<string>('NODE_ENV') === 'production',
         retryAttempts: 10,
         retryDelay: 3000,

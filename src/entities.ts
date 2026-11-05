@@ -258,6 +258,9 @@ export class LedgerTransaction {
 
   @Column({ type: 'timestamptz', default: () => 'NOW()' })
   createdAt!: Date;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  deletedAt!: Date | null;
 }
 
 @Entity('skill_audit_logs')
@@ -283,6 +286,9 @@ export class SkillAuditLog {
 
   @Column({ type: 'varchar', nullable: true })
   correlationId!: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  detail!: string | null;
 
   @Column({ type: 'timestamptz', default: () => 'NOW()' })
   createdAt!: Date;

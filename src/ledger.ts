@@ -1,12 +1,15 @@
 import {
   Body,
+  ConflictException,
   Controller,
+  Delete,
   ForbiddenException,
   Get,
   Injectable,
   NotFoundException,
   Param,
   ParseIntPipe,
+  Patch,
   Post,
   Query,
   Req,
@@ -24,7 +27,7 @@ import {
   Min,
   MinLength,
 } from 'class-validator';
-import { Repository, SelectQueryBuilder } from 'typeorm';
+import { IsNull, Repository, SelectQueryBuilder } from 'typeorm';
 import { AuthedRequest, JwtAuthGuard } from './auth';
 import {
   ExternalIdentity,
@@ -97,6 +100,23 @@ export class AddMemberDto {
 
   @IsIn(['admin', 'member', 'viewer'])
   role!: Exclude<LedgerRole, 'owner'>;
+}
+
+export class UpdateTransactionNoteDto {
+  @IsString()
+  @MaxLength(500)
+  note!: string;
+}
+
+export class SkillUpdateTransactionDto extends UpdateTransactionNoteDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(160)
+  weixinUserId!: string;
+
+  @IsInt()
+  @Min(1)
+  ledgerId!: number;
 }
 
 export class SkillTransactionDto extends CreateTransactionDto {
@@ -225,6 +245,7 @@ export class LedgerService {
       const existing = await this.transactions.findOne({
         where: { source, idempotencyKey: dto.idempotencyKey },
       });
+      if (existing?.deletedAt) throw new ConflictException('该记录已删除');
       if (existing) return existing;
     }
     return this.transactions.save(
@@ -309,6 +330,29 @@ export class LedgerService {
     );
   }
 
+  async updateTransactionNote(actorId: number, ledgerId: number, transactionId: number, note: string) {
+    await this.requireRole(actorId, ledgerId, ['owner', 'admin', 'member']);
+    const transaction = await this.findActiveTransaction(ledgerId, transactionId);
+    const previousNote = transaction.note;
+    transaction.note = note.trim() || null;
+    return { transaction: await this.transactions.save(transaction), previousNote };
+  }
+
+  async softDeleteTransaction(actorId: number, ledgerId: number, transactionId: number) {
+    await this.requireRole(actorId, ledgerId, ['owner', 'admin', 'member']);
+    const transaction = await this.findActiveTransaction(ledgerId, transactionId);
+    transaction.deletedAt = new Date();
+    return this.transactions.save(transaction);
+  }
+
+  private async findActiveTransaction(ledgerId: number, transactionId: number) {
+    const transaction = await this.transactions.findOne({
+      where: { id: transactionId, ledgerId, deletedAt: IsNull() },
+    });
+    if (!transaction) throw new NotFoundException('流水不存在');
+    return transaction;
+  }
+
   async resolveWeixinUser(weixinUserId: string) {
     const identity = await this.identities.findOne({
       where: { provider: 'weixin', providerUserId: weixinUserId },
@@ -323,6 +367,7 @@ export class LedgerService {
     externalIdentityId: number | null,
     ledgerId: number | null,
     correlationId: string | null,
+    detail: string | null = null,
   ) {
     await this.auditLogs.save(
       this.auditLogs.create({
@@ -332,6 +377,7 @@ export class LedgerService {
         externalIdentityId,
         ledgerId,
         correlationId,
+        detail,
       }),
     );
   }
@@ -340,6 +386,7 @@ export class LedgerService {
     query: SelectQueryBuilder<LedgerTransaction>,
     options: { from?: string; to?: string; direction?: Direction },
   ) {
+    query.andWhere('transaction.deletedAt IS NULL');
     if (options.from) query.andWhere('transaction.occurredAt >= :from', { from: new Date(options.from) });
     if (options.to) query.andWhere('transaction.occurredAt < :to', { to: new Date(options.to) });
     if (options.direction) query.andWhere('transaction.direction = :direction', { direction: options.direction });
@@ -416,6 +463,54 @@ export class LedgerController {
     @Body() dto: CreateTransactionDto,
   ) {
     return this.ledger.createTransaction(req.user.id, ledgerId, dto);
+  }
+
+  @Patch(':ledgerId/transactions/:transactionId')
+  async updateTransaction(
+    @Req() req: AuthedRequest,
+    @Param('ledgerId', ParseIntPipe) ledgerId: number,
+    @Param('transactionId', ParseIntPipe) transactionId: number,
+    @Body() dto: UpdateTransactionNoteDto,
+  ) {
+    const { transaction, previousNote } = await this.ledger.updateTransactionNote(
+      req.user.id,
+      ledgerId,
+      transactionId,
+      dto.note,
+    );
+    await this.ledger.recordSkillAudit(
+      'update_transaction_note',
+      'success',
+      null,
+      ledgerId,
+      String(transactionId),
+      JSON.stringify({ before: previousNote, after: transaction.note, actorUserId: req.user.id }),
+    );
+    return transaction;
+  }
+
+  @Delete(':ledgerId/transactions/:transactionId')
+  async deleteTransaction(
+    @Req() req: AuthedRequest,
+    @Param('ledgerId', ParseIntPipe) ledgerId: number,
+    @Param('transactionId', ParseIntPipe) transactionId: number,
+  ) {
+    const transaction = await this.ledger.softDeleteTransaction(req.user.id, ledgerId, transactionId);
+    await this.ledger.recordSkillAudit(
+      'delete_transaction',
+      'success',
+      null,
+      ledgerId,
+      String(transactionId),
+      JSON.stringify({
+        amountMinor: transaction.amountMinor,
+        direction: transaction.direction,
+        occurredAt: transaction.occurredAt,
+        note: transaction.note,
+        actorUserId: req.user.id,
+      }),
+    );
+    return transaction;
   }
 
   @Get(':ledgerId/summary')
@@ -499,6 +594,76 @@ export class LedgerInternalController {
         identity?.id ?? null,
         dto.ledgerId,
         dto.messageId,
+      );
+      throw error;
+    }
+  }
+
+  @Patch('transactions/:id')
+  async updateTransaction(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: SkillUpdateTransactionDto,
+  ) {
+    let identity: ExternalIdentity | null = null;
+    try {
+      identity = await this.ledger.resolveWeixinUser(dto.weixinUserId);
+      const { transaction, previousNote } = await this.ledger.updateTransactionNote(
+        identity.userId,
+        dto.ledgerId,
+        id,
+        dto.note,
+      );
+      await this.ledger.recordSkillAudit(
+        'update_transaction_note',
+        'success',
+        identity.id,
+        dto.ledgerId,
+        String(id),
+        JSON.stringify({ before: previousNote, after: transaction.note }),
+      );
+      return transaction;
+    } catch (error) {
+      await this.ledger.recordSkillAudit(
+        'update_transaction_note',
+        error instanceof ForbiddenException ? 'denied' : 'error',
+        identity?.id ?? null,
+        dto.ledgerId,
+        String(id),
+      );
+      throw error;
+    }
+  }
+
+  @Delete('transactions/:id')
+  async deleteTransaction(
+    @Param('id', ParseIntPipe) id: number,
+    @Query() query: SkillLedgerQueryDto,
+  ) {
+    let identity: ExternalIdentity | null = null;
+    try {
+      identity = await this.ledger.resolveWeixinUser(query.weixinUserId);
+      const transaction = await this.ledger.softDeleteTransaction(identity.userId, query.ledgerId, id);
+      await this.ledger.recordSkillAudit(
+        'delete_transaction',
+        'success',
+        identity.id,
+        query.ledgerId,
+        String(id),
+        JSON.stringify({
+          amountMinor: transaction.amountMinor,
+          direction: transaction.direction,
+          occurredAt: transaction.occurredAt,
+          note: transaction.note,
+        }),
+      );
+      return transaction;
+    } catch (error) {
+      await this.ledger.recordSkillAudit(
+        'delete_transaction',
+        error instanceof ForbiddenException ? 'denied' : 'error',
+        identity?.id ?? null,
+        query.ledgerId,
+        String(id),
       );
       throw error;
     }
