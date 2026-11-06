@@ -360,6 +360,9 @@ export class AccessService {
   async updateUser(actorId: number, userId: number, dto: UpdateUserDto) {
     const user = await this.users.findOne({ where: { id: userId } });
     if (!user) throw new NotFoundException('账号不存在');
+    if (user.username === 'admin' && dto.enabled === false) {
+      throw new BadRequestException('admin 账号不能停用');
+    }
     if (actorId === userId && dto.enabled === false) {
       throw new BadRequestException('不能停用当前登录账号');
     }
@@ -383,6 +386,12 @@ export class AccessService {
     const user = await this.users.findOne({ where: { id: userId } });
     if (!user) throw new NotFoundException('账号不存在');
     const unique = [...new Set(roleIds)];
+    const adminRole = await this.roles.findOne({ where: { code: 'admin' } });
+    if (user.username === 'admin') {
+      if (!adminRole || !unique.includes(adminRole.id)) {
+        throw new BadRequestException('admin 账号不能取消管理员权限');
+      }
+    }
     if (unique.length) {
       const found = await this.roles.find({ where: { id: In(unique) } });
       if (found.length !== unique.length) throw new BadRequestException('包含不存在的角色');

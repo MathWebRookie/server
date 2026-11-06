@@ -48,6 +48,21 @@ export class SeedService implements OnModuleInit {
       await this.seedContent();
     }
     await this.seedAccess();
+    await this.ensureBuiltinAdmin();
+  }
+
+  private async ensureBuiltinAdmin() {
+    const role = await this.roles.findOne({ where: { code: 'admin' } });
+    const user = await this.users.findOne({ where: { username: 'admin' } });
+    if (!role || !user) return;
+    if (user.enabled === false) {
+      user.enabled = true;
+      await this.users.save(user);
+    }
+    const link = await this.userRoles.findOne({ where: { userId: user.id, roleId: role.id } });
+    if (link) return;
+    await this.userRoles.save(this.userRoles.create({ userId: user.id, roleId: role.id }));
+    this.logger.log('已恢复 admin 账号的管理员权限');
   }
 
   private async seedContent() {
