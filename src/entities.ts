@@ -293,3 +293,76 @@ export class SkillAuditLog {
   @Column({ type: 'timestamptz', default: () => 'NOW()' })
   createdAt!: Date;
 }
+
+export type AccessMenuType = 'catalog' | 'page' | 'button';
+
+@Entity('access_roles')
+export class AccessRole {
+  @PrimaryGeneratedColumn()
+  id!: number;
+
+  @Column({ unique: true })
+  code!: string;
+
+  @Column()
+  name!: string;
+}
+
+@Entity('access_menus')
+export class AccessMenu {
+  @PrimaryGeneratedColumn()
+  id!: number;
+
+  @Column({ type: 'int', nullable: true })
+  parentId!: number | null;
+
+  @Column()
+  type!: AccessMenuType;
+
+  @Column()
+  title!: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  path!: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  component!: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  icon!: string | null;
+
+  @Column({ type: 'varchar', nullable: true })
+  permission!: string | null;
+
+  @Column({ default: 0 })
+  sort!: number;
+
+  @Column({ default: true })
+  visible!: boolean;
+}
+
+@Entity('access_role_menus')
+@Index(['roleId', 'menuId'], { unique: true })
+export class AccessRoleMenu {
+  @PrimaryGeneratedColumn()
+  id!: number;
+
+  @Column()
+  roleId!: number;
+
+  @Column()
+  menuId!: number;
+}
+
+@Entity('access_user_roles')
+@Index(['userId', 'roleId'], { unique: true })
+export class AccessUserRole {
+  @PrimaryGeneratedColumn()
+  id!: number;
+
+  @Column()
+  userId!: number;
+
+  @Column()
+  roleId!: number;
+}

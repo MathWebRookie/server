@@ -15,9 +15,9 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { IsString, MinLength } from 'class-validator';
 import { Request } from 'express';
 import { ExtractJwt, Strategy } from 'passport-jwt';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import bcrypt from 'bcryptjs';
-import { ExternalIdentity, User } from './entities';
+import { AccessRole, AccessUserRole, ExternalIdentity, User } from './entities';
 
 export class LoginDto {
   @IsString()
@@ -71,6 +71,10 @@ export class AuthService {
     @InjectRepository(User) private readonly users: Repository<User>,
     @InjectRepository(ExternalIdentity)
     private readonly externalIdentities: Repository<ExternalIdentity>,
+    @InjectRepository(AccessUserRole)
+    private readonly userRoles: Repository<AccessUserRole>,
+    @InjectRepository(AccessRole)
+    private readonly accessRoles: Repository<AccessRole>,
     private readonly jwt: JwtService,
   ) {}
 
@@ -86,6 +90,15 @@ export class AuthService {
       username: user.username,
     });
     return { token, username: user.username, nickname: user.nickname };
+  }
+
+  async roleCodes(userId: number) {
+    const links = await this.userRoles.find({ where: { userId } });
+    if (!links.length) return [];
+    const roles = await this.accessRoles.find({
+      where: { id: In(links.map((item) => item.roleId)) },
+    });
+    return roles.map((role) => role.code);
   }
 
   async bindExternalIdentity(userId: number, dto: BindExternalIdentityDto) {
@@ -121,10 +134,11 @@ export class AuthController {
 
   @UseGuards(JwtAuthGuard)
   @Get('profile')
-  profile(@Req() req: AuthedRequest) {
+  async profile(@Req() req: AuthedRequest) {
     return {
       username: req.user.username,
       nickname: req.user.nickname,
+      roles: await this.auth.roleCodes(req.user.id),
     };
   }
 
