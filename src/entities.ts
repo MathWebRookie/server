@@ -13,6 +13,9 @@ export class User {
 
   @Column({ default: '大帅逼' })
   nickname!: string;
+
+  @Column({ default: true })
+  enabled!: boolean;
 }
 
 @Entity('articles')

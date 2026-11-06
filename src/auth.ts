@@ -3,7 +3,9 @@ import {
   Controller,
   Get,
   Injectable,
+  Patch,
   Post,
+  Put,
   Req,
   UnauthorizedException,
   UseGuards,
@@ -12,7 +14,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { AuthGuard, PassportStrategy } from '@nestjs/passport';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsString, MinLength } from 'class-validator';
+import { IsString, MaxLength, MinLength } from 'class-validator';
 import { Request } from 'express';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { In, Repository } from 'typeorm';
@@ -27,6 +29,24 @@ export class LoginDto {
   @IsString()
   @MinLength(1)
   password!: string;
+}
+
+export class UpdateProfileDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(40)
+  nickname!: string;
+}
+
+export class ChangePasswordDto {
+  @IsString()
+  @MinLength(1)
+  oldPassword!: string;
+
+  @IsString()
+  @MinLength(6)
+  @MaxLength(64)
+  newPassword!: string;
 }
 
 export class BindExternalIdentityDto {
@@ -58,7 +78,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
   async validate(payload: JwtPayload) {
     const user = await this.users.findOne({ where: { id: payload.sub } });
-    if (!user) {
+    if (!user || user.enabled === false) {
       throw new UnauthorizedException('登录已失效');
     }
     return { id: user.id, username: user.username, nickname: user.nickname };
@@ -85,6 +105,9 @@ export class AuthService {
     if (!user || !matched) {
       throw new UnauthorizedException('用户名或密码错误');
     }
+    if (user.enabled === false) {
+      throw new UnauthorizedException('账号已停用');
+    }
     const token = await this.jwt.signAsync({
       sub: user.id,
       username: user.username,
@@ -99,6 +122,24 @@ export class AuthService {
       where: { id: In(links.map((item) => item.roleId)) },
     });
     return roles.map((role) => role.code);
+  }
+
+  async updateProfile(userId: number, nickname: string) {
+    const user = await this.users.findOne({ where: { id: userId } });
+    if (!user) throw new UnauthorizedException('登录已失效');
+    user.nickname = nickname.trim();
+    await this.users.save(user);
+    return { username: user.username, nickname: user.nickname };
+  }
+
+  async changePassword(userId: number, oldPassword: string, newPassword: string) {
+    const user = await this.users.findOne({ where: { id: userId } });
+    if (!user) throw new UnauthorizedException('登录已失效');
+    const matched = await bcrypt.compare(oldPassword, user.passwordHash);
+    if (!matched) throw new UnauthorizedException('原密码不正确');
+    user.passwordHash = await bcrypt.hash(newPassword, 10);
+    await this.users.save(user);
+    return { ok: true };
   }
 
   async bindExternalIdentity(userId: number, dto: BindExternalIdentityDto) {
@@ -140,6 +181,18 @@ export class AuthController {
       nickname: req.user.nickname,
       roles: await this.auth.roleCodes(req.user.id),
     };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch('profile')
+  updateProfile(@Req() req: AuthedRequest, @Body() dto: UpdateProfileDto) {
+    return this.auth.updateProfile(req.user.id, dto.nickname);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Put('password')
+  changePassword(@Req() req: AuthedRequest, @Body() dto: ChangePasswordDto) {
+    return this.auth.changePassword(req.user.id, dto.oldPassword, dto.newPassword);
   }
 
   @UseGuards(JwtAuthGuard)

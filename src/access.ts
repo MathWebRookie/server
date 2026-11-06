@@ -33,6 +33,7 @@ import {
   MinLength,
 } from 'class-validator';
 import { In, Repository } from 'typeorm';
+import bcrypt from 'bcryptjs';
 import { AuthedRequest, JwtAuthGuard } from './auth';
 import {
   AccessMenu,
@@ -43,19 +44,24 @@ import {
   User,
 } from './entities';
 
-export const VIEW_COMPONENTS = [
-  'Home/index',
-  'Blog/index',
-  'TreeHole/index',
-  'TimeLine/index',
-  'shongren/index',
-  'photos/index',
-  'Moments/index',
-  'Analysis/index',
-  'complexFroms/index',
-  'Largescreen/fusion/index',
-  'Access/index',
-] as const;
+const LEGACY_COMPONENT = /^[A-Za-z0-9][A-Za-z0-9_./-]*$/;
+const VIEW_FILE = /^src\/views\/[A-Za-z0-9][A-Za-z0-9_./-]*\.vue$/;
+
+export function normalizeComponent(input: string) {
+  let value = input.trim().replace(/\\/g, '/');
+  value = value.replace(/^@\//, 'src/').replace(/^\.\//, '');
+  if (value.startsWith('views/')) value = `src/${value}`;
+  if (value.startsWith('src/views/') && !value.endsWith('.vue')) value = `${value}.vue`;
+  if (value.includes('..')) throw new BadRequestException('组件路径不能包含 ..');
+  if (value.startsWith('src/')) {
+    if (!VIEW_FILE.test(value)) throw new BadRequestException('组件路径需要是 src/views 下的 .vue 文件');
+    return value;
+  }
+  if (!LEGACY_COMPONENT.test(value)) {
+    throw new BadRequestException('组件路径需要是 src/views 下的 .vue 文件');
+  }
+  return value;
+}
 
 const PERMISSIONS_KEY = 'permissions';
 export const RequirePermissions = (...codes: string[]) => SetMetadata(PERMISSIONS_KEY, codes);
@@ -81,7 +87,7 @@ export class SaveMenuDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(80)
+  @MaxLength(160)
   component?: string | null;
 
   @IsOptional()
@@ -129,6 +135,47 @@ export class MenuIdsDto {
   @IsInt({ each: true })
   @Min(1, { each: true })
   menuIds!: number[];
+}
+
+export class CreateUserDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(40)
+  username!: string;
+
+  @IsString()
+  @MinLength(6)
+  @MaxLength(64)
+  password!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  nickname?: string;
+
+  @IsOptional()
+  @IsArray()
+  @Type(() => Number)
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  roleIds?: number[];
+}
+
+export class UpdateUserDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(40)
+  nickname!: string;
+
+  @IsBoolean()
+  enabled!: boolean;
+}
+
+export class ResetPasswordDto {
+  @IsString()
+  @MinLength(6)
+  @MaxLength(64)
+  password!: string;
 }
 
 export class RoleIdsDto {
@@ -282,8 +329,54 @@ export class AccessService {
       id: user.id,
       username: user.username,
       nickname: user.nickname,
+      enabled: user.enabled !== false,
       roleIds: links.filter((link) => link.userId === user.id).map((link) => link.roleId),
     }));
+  }
+
+  async createUser(dto: CreateUserDto) {
+    const username = dto.username.trim();
+    const existing = await this.users.findOne({ where: { username } });
+    if (existing) throw new BadRequestException('用户名已存在');
+    const roleIds = [...new Set(dto.roleIds ?? [])];
+    if (roleIds.length) {
+      const found = await this.roles.find({ where: { id: In(roleIds) } });
+      if (found.length !== roleIds.length) throw new BadRequestException('包含不存在的角色');
+    }
+    const user = await this.users.save(
+      this.users.create({
+        username,
+        nickname: dto.nickname?.trim() || username,
+        passwordHash: await bcrypt.hash(dto.password, 10),
+        enabled: true,
+      }),
+    );
+    if (roleIds.length) {
+      await this.userRoles.save(roleIds.map((roleId) => this.userRoles.create({ userId: user.id, roleId })));
+    }
+    return { id: user.id, username: user.username, nickname: user.nickname, enabled: true, roleIds };
+  }
+
+  async updateUser(actorId: number, userId: number, dto: UpdateUserDto) {
+    const user = await this.users.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException('账号不存在');
+    if (actorId === userId && dto.enabled === false) {
+      throw new BadRequestException('不能停用当前登录账号');
+    }
+    const links = await this.userRoles.find({ where: { userId } });
+    await this.ensureAdminRemains(userId, links.map((link) => link.roleId), dto.enabled);
+    user.nickname = dto.nickname.trim();
+    user.enabled = dto.enabled;
+    await this.users.save(user);
+    return { id: user.id, nickname: user.nickname, enabled: user.enabled };
+  }
+
+  async resetPassword(userId: number, password: string) {
+    const user = await this.users.findOne({ where: { id: userId } });
+    if (!user) throw new NotFoundException('账号不存在');
+    user.passwordHash = await bcrypt.hash(password, 10);
+    await this.users.save(user);
+    return { ok: true };
   }
 
   async assignUserRoles(actorId: number, userId: number, roleIds: number[]) {
@@ -294,7 +387,7 @@ export class AccessService {
       const found = await this.roles.find({ where: { id: In(unique) } });
       if (found.length !== unique.length) throw new BadRequestException('包含不存在的角色');
     }
-    await this.ensureAdminRemains(userId, unique);
+    await this.ensureAdminRemains(userId, unique, user.enabled !== false);
     await this.userRoles.delete({ userId });
     if (unique.length) {
       await this.userRoles.save(unique.map((roleId) => this.userRoles.create({ userId, roleId })));
@@ -302,12 +395,17 @@ export class AccessService {
     return { ok: true, self: actorId === userId };
   }
 
-  private async ensureAdminRemains(userId: number, nextRoleIds: number[]) {
+  private async ensureAdminRemains(userId: number, nextRoleIds: number[], enabled: boolean) {
     const admin = await this.roles.findOne({ where: { code: 'admin' } });
     if (!admin) return;
     const holders = await this.userRoles.find({ where: { roleId: admin.id } });
-    const stillHeld = holders.some((link) => link.userId !== userId) || nextRoleIds.includes(admin.id);
-    if (!stillHeld) throw new BadRequestException('至少保留一个管理员账号');
+    const others = holders.filter((link) => link.userId !== userId);
+    const otherUsers = others.length
+      ? await this.users.find({ where: { id: In(others.map((link) => link.userId)) } })
+      : [];
+    const otherEnabled = otherUsers.some((item) => item.enabled !== false);
+    const keepsAdmin = enabled && nextRoleIds.includes(admin.id);
+    if (!otherEnabled && !keepsAdmin) throw new BadRequestException('至少保留一个启用的管理员账号');
   }
 
   private async assignedMenus(userId: number) {
@@ -328,8 +426,12 @@ export class AccessService {
     const permission = dto.permission?.trim() || null;
     if (type === 'page') {
       if (!path || !path.startsWith('/')) throw new BadRequestException('页面地址需要以 / 开头');
-      if (!component || !VIEW_COMPONENTS.includes(component as (typeof VIEW_COMPONENTS)[number])) {
-        throw new BadRequestException('页面组件不在白名单中');
+      if (!component) throw new BadRequestException('页面需要填写组件路径');
+      try {
+        normalizeComponent(component);
+      } catch (error) {
+        if (error instanceof BadRequestException) throw error;
+        throw new BadRequestException('组件路径需要是 src/views 下的 .vue 文件');
       }
     }
     if (type === 'button') {
@@ -344,7 +446,7 @@ export class AccessService {
       type,
       title,
       path: type === 'button' ? null : path,
-      component: type === 'page' ? component : null,
+      component: type === 'page' && component ? normalizeComponent(component) : null,
       icon: dto.icon?.trim() || null,
       permission,
       sort: dto.sort ?? current?.sort ?? 0,
@@ -467,6 +569,24 @@ export class AccessController {
   @Get('users')
   users() {
     return this.access.listUsers();
+  }
+
+  @RequirePermissions('access:assign')
+  @Post('users')
+  createUser(@Body() dto: CreateUserDto) {
+    return this.access.createUser(dto);
+  }
+
+  @RequirePermissions('access:assign')
+  @Patch('users/:id')
+  updateUser(@Req() req: AuthedRequest, @Param('id', ParseIntPipe) id: number, @Body() dto: UpdateUserDto) {
+    return this.access.updateUser(req.user.id, id, dto);
+  }
+
+  @RequirePermissions('access:assign')
+  @Put('users/:id/password')
+  resetPassword(@Param('id', ParseIntPipe) id: number, @Body() dto: ResetPasswordDto) {
+    return this.access.resetPassword(id, dto.password);
   }
 
   @RequirePermissions('access:assign')

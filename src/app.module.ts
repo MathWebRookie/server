@@ -35,6 +35,7 @@ import { LedgerSkillAuthGuard } from './ledger-skill-auth.guard';
 import { LedgerInitial1730000000000 } from './migrations/1730000000000-ledger-initial';
 import { LedgerTransactionRevision1730000000001 } from './migrations/1730000000001-ledger-transaction-revision';
 import { AccessControl1730000000002 } from './migrations/1730000000002-access-control';
+import { UserEnabled1730000000003 } from './migrations/1730000000003-user-enabled';
 import { SeedService } from './seed.service';
 
 const entities = [
@@ -75,6 +76,7 @@ const entities = [
           LedgerInitial1730000000000,
           LedgerTransactionRevision1730000000001,
           AccessControl1730000000002,
+          UserEnabled1730000000003,
         ],
         migrationsRun: config.get<string>('NODE_ENV') === 'production',
         retryAttempts: 10,
