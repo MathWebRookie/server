@@ -49,6 +49,7 @@ export class SeedService implements OnModuleInit {
     }
     await this.seedAccess();
     await this.ensureBuiltinAdmin();
+    await this.ensureScreenBlank();
   }
 
   private async ensureBuiltinAdmin() {
@@ -63,6 +64,28 @@ export class SeedService implements OnModuleInit {
     if (link) return;
     await this.userRoles.save(this.userRoles.create({ userId: user.id, roleId: role.id }));
     this.logger.log('已恢复 admin 账号的管理员权限');
+  }
+
+  private async ensureScreenBlank() {
+    const key = 'access:screen-blank';
+    if (await this.docs.findOne({ where: { key } })) return;
+    const rows = await this.accessMenus.find();
+    for (const row of rows) {
+      if (row.type !== 'page') continue;
+      const path = row.path || '';
+      const component = row.component || '';
+      const matched =
+        path === '/Largescreen/fusion' ||
+        path === '/fusionlarge' ||
+        path === '/fusionlarge/fusionLargescreen' ||
+        component.includes('Largescreen/fusion/');
+      if (!matched) continue;
+      row.blank = true;
+      if (component.includes('fusion/fusion')) row.component = 'Largescreen/fusion/index';
+      await this.accessMenus.save(row);
+    }
+    await this.docs.save(this.docs.create({ key, payload: { at: new Date().toISOString() } }));
+    this.logger.log('已把指挥信息平台标为新窗口打开');
   }
 
   private async seedContent() {
@@ -152,6 +175,7 @@ export class SeedService implements OnModuleInit {
             permission: node.permission ?? null,
             sort: index,
             visible: true,
+            blank: node.blank ?? false,
           }),
         );
         for (const role of node.roles) buckets[role].push(saved.id);
@@ -196,6 +220,7 @@ type AccessSeedNode = {
   component?: string;
   icon?: string;
   permission?: string;
+  blank?: boolean;
   roles: AccessRoleCode[];
   children?: AccessSeedNode[];
 };
@@ -271,7 +296,12 @@ const accessSeed: AccessSeedNode[] = [
     path: '/Largescreen',
     icon: 'DesktopOutlined',
     roles: contentRoles,
-    children: [page('指挥信息平台', '/Largescreen/fusion', 'Largescreen/fusion/index', 'fusion:view')],
+    children: [
+      {
+        ...page('指挥信息平台', '/fusionlarge/fusionLargescreen', 'Largescreen/fusion/index', 'fusion:view'),
+        blank: true,
+      },
+    ],
   },
   {
     type: 'page',

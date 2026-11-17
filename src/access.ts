@@ -108,6 +108,10 @@ export class SaveMenuDto {
   @IsOptional()
   @IsBoolean()
   visible?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  blank?: boolean;
 }
 
 export class SaveRoleDto {
@@ -460,6 +464,7 @@ export class AccessService {
       permission,
       sort: dto.sort ?? current?.sort ?? 0,
       visible: dto.visible ?? current?.visible ?? true,
+      blank: type === 'page' ? Boolean(dto.blank ?? current?.blank ?? false) : false,
     };
   }
 

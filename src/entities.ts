@@ -342,6 +342,9 @@ export class AccessMenu {
 
   @Column({ default: true })
   visible!: boolean;
+
+  @Column({ default: false })
+  blank!: boolean;
 }
 
 @Entity('access_role_menus')
